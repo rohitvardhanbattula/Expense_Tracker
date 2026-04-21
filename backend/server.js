@@ -1,29 +1,30 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const db = new sqlite3.Database('./expenses.db');
-
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS expenses (
-      id TEXT PRIMARY KEY,
-      amount INTEGER NOT NULL,
-      category TEXT NOT NULL,
-      description TEXT,
-      date TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      idempotency_key TEXT UNIQUE
-    )
-  `);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-app.post('/expenses', (req, res) => {
+pool.query(`
+  CREATE TABLE IF NOT EXISTS expenses (
+    id VARCHAR(255) PRIMARY KEY,
+    amount INTEGER NOT NULL,
+    category VARCHAR(255) NOT NULL,
+    description TEXT,
+    date VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    idempotency_key VARCHAR(255) UNIQUE
+  )
+`);
+
+app.post('/expenses', async (req, res) => {
   const { amount, category, description, date } = req.body;
   const idempotencyKey = req.headers['idempotency-key'] || uuidv4();
 
@@ -31,31 +32,32 @@ app.post('/expenses', (req, res) => {
     return res.status(400).json({ error: 'Invalid input' });
   }
 
-  db.get('SELECT * FROM expenses WHERE idempotency_key = ?', [idempotencyKey], (err, row) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
-    if (row) return res.json(row);
+  try {
+    const existing = await pool.query('SELECT * FROM expenses WHERE idempotency_key = $1', [idempotencyKey]);
+    if (existing.rows.length > 0) return res.json(existing.rows[0]);
 
     const id = uuidv4();
     const amountInt = Math.round(parseFloat(amount) * 100);
 
-    const stmt = db.prepare('INSERT INTO expenses (id, amount, category, description, date, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)');
-    stmt.run([id, amountInt, category, description, date, idempotencyKey], function(err) {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      db.get('SELECT * FROM expenses WHERE id = ?', [id], (err, newRow) => {
-        res.status(201).json(newRow);
-      });
-    });
-    stmt.finalize();
-  });
+    await pool.query(
+      'INSERT INTO expenses (id, amount, category, description, date, idempotency_key) VALUES ($1, $2, $3, $4, $5, $6)',
+      [id, amountInt, category, description, date, idempotencyKey]
+    );
+
+    const newRow = await pool.query('SELECT * FROM expenses WHERE id = $1', [id]);
+    res.status(201).json(newRow.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
-app.get('/expenses', (req, res) => {
+app.get('/expenses', async (req, res) => {
   const { category, sort } = req.query;
   let query = 'SELECT * FROM expenses';
   const params = [];
 
   if (category) {
-    query += ' WHERE category = ?';
+    query += ' WHERE category = $1';
     params.push(category);
   }
 
@@ -63,10 +65,12 @@ app.get('/expenses', (req, res) => {
     query += ' ORDER BY date DESC, created_at DESC';
   }
 
-  db.all(query, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
-    res.json(rows);
-  });
+  try {
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
