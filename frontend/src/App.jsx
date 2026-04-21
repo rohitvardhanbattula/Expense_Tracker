@@ -15,7 +15,7 @@ function App() {
 
   const fetchExpenses = async () => {
     try {
-      let url = 'http://localhost:3000/expenses?sort=date_desc';
+      let url = 'https://expense-tracker-wnfk.onrender.com/expenses?sort=date_desc';
       if (filterCategory) url += `&category=${encodeURIComponent(filterCategory)}`;
       const res = await fetch(url);
       const data = await res.json();
@@ -34,7 +34,7 @@ function App() {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch('http://localhost:3000/expenses', {
+      const response = await fetch('https://expense-tracker-wnfk.onrender.com/expenses', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
